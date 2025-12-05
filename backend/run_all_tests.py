@@ -179,48 +179,75 @@ def run_comparison_test():
         'seed': 42
     }
     
-    print(f"\nConfig: {test_config['total_packets']} packets, seed={test_config['seed']}")
+    n_runs = 5  # Number of runs per scenario
     
-    # Run FIFO test
-    print("\nRunning FIFO baseline...")
-    fifo_results = run_scheduler_baseline_test(
-        scheduler_type="FIFO",
-        **test_config
-    )
-    print_test_results(fifo_results, "FIFO Results")
+    print(f"\nConfig: {test_config['total_packets']} packets, seed={test_config['seed']}, n={n_runs} runs")
     
-    time.sleep(0.5)
+    # Collect results from multiple runs
+    fifo_all_results = []
+    dtp_all_results = []
     
-    # Run DTP test
-    print("\nRunning DTP baseline...")
-    dtp_results = run_scheduler_baseline_test(
-        scheduler_type="DTP",
-        **test_config
-    )
-    print_test_results(dtp_results, "DTP Results")
+    for run in range(n_runs):
+        print(f"\n--- Run {run + 1}/{n_runs} ---")
+        
+        # Run FIFO test
+        print("Running FIFO baseline...")
+        fifo_results = run_scheduler_baseline_test(
+            scheduler_type="FIFO",
+            **test_config
+        )
+        fifo_all_results.append(fifo_results)
+        
+        time.sleep(0.2)
+        
+        # Run DTP test
+        print("Running DTP baseline...")
+        dtp_results = run_scheduler_baseline_test(
+            scheduler_type="DTP",
+            **test_config
+        )
+        dtp_all_results.append(dtp_results)
+        
+        time.sleep(0.2)
     
-    # Print comparison
-    print("\n" + "="*70)
-    print("  Comparison Summary")
-    print("="*70)
-    
+    # Calculate average on-time percentages
     priority_order = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']
+    
+    fifo_avg = {}
+    dtp_avg = {}
+    
+    for pri in priority_order:
+        fifo_pcts = []
+        dtp_pcts = []
+        
+        for r in fifo_all_results:
+            stats = r['by_priority'].get(pri, {})
+            recv = stats.get('received', 0)
+            on_time = stats.get('on_time', 0)
+            pct = (on_time / recv * 100) if recv > 0 else 0
+            fifo_pcts.append(pct)
+        
+        for r in dtp_all_results:
+            stats = r['by_priority'].get(pri, {})
+            recv = stats.get('received', 0)
+            on_time = stats.get('on_time', 0)
+            pct = (on_time / recv * 100) if recv > 0 else 0
+            dtp_pcts.append(pct)
+        
+        fifo_avg[pri] = mean(fifo_pcts)
+        dtp_avg[pri] = mean(dtp_pcts)
+    
+    # Print final comparison with averages
+    print("\n" + "="*70)
+    print(f"  Comparison Summary (Average of {n_runs} runs)")
+    print("="*70)
     
     print(f"\n{'Priority':<12} {'FIFO OnTime':>14} {'DTP OnTime':>14} {'Improvement':>14}")
     print("-" * 56)
     
     for pri in priority_order:
-        fifo_stats = fifo_results['by_priority'].get(pri, {})
-        dtp_stats = dtp_results['by_priority'].get(pri, {})
-        
-        fifo_recv = fifo_stats.get('received', 0)
-        dtp_recv = dtp_stats.get('received', 0)
-        
-        fifo_on_time = fifo_stats.get('on_time', 0)
-        dtp_on_time = dtp_stats.get('on_time', 0)
-        
-        fifo_pct = (fifo_on_time / fifo_recv * 100) if fifo_recv > 0 else 0
-        dtp_pct = (dtp_on_time / dtp_recv * 100) if dtp_recv > 0 else 0
+        fifo_pct = fifo_avg[pri]
+        dtp_pct = dtp_avg[pri]
         
         improvement = dtp_pct - fifo_pct
         imp_str = f"+{improvement:.1f}%" if improvement > 0 else f"{improvement:.1f}%"
@@ -229,7 +256,7 @@ def run_comparison_test():
     
     print("\n" + "="*70)
     
-    return {'fifo': fifo_results, 'dtp': dtp_results}
+    return {'fifo': fifo_all_results, 'dtp': dtp_all_results}
 
 
 if __name__ == "__main__":
