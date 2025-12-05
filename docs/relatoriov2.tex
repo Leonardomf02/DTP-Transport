@@ -1,0 +1,270 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2cm]{geometry}
+\usepackage{times}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{setspace}
+\usepackage{listings}
+\usepackage{booktabs}
+
+\setlength{\parskip}{4pt}
+\setlength{\parindent}{0pt}
+\setstretch{1.0}
+
+\titleformat{\section}{\large\bfseries}{\thesection}{1em}{}
+\titlespacing*{\section}{0pt}{8pt}{4pt}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{1em}{}
+\titlespacing*{\subsection}{0pt}{6pt}{2pt}
+
+\title{\textbf{DTP — Deadline-aware Transport Protocol}\\
+\large Arquiteturas Avançadas de Redes — UBI (2025/26)}
+\author{
+Leonardo Santos (M15811) \and
+Diogo Pedro (E11657) \and
+Guilherme Vicente (E11656) \and
+Tiago Ramos (E11663)
+}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-10pt}
+
+\begin{abstract}
+\small
+O DTP (Deadline-aware Transport Protocol) é um protocolo de transporte desenvolvido para aplicações interativas tempo-real, onde a entrega antes de um deadline é mais importante que a fiabilidade absoluta. Este relatório apresenta a motivação, revisão de literatura, o mini-RFC do protocolo, a implementação completa e resultados experimentais que demonstram melhorias de até 82\% na entrega on-time de pacotes críticos comparado com FIFO tradicional.
+\end{abstract}
+
+\section{Introdução}
+
+Aplicações modernas como VR/AR, telemedicina, controlo robótico e streaming interativo exigem requisitos temporais estritos. Protocolos tradicionais (TCP/UDP) não incorporam deadlines explícitas: TCP prioriza fiabilidade sem considerar utilidade temporal dos dados; UDP não oferece mecanismos de priorização ou scheduling.
+
+O DTP aborda este problema ao permitir que aplicações definam deadlines e prioridades para cada pacote, implementando scheduling deadline-aware (EDF), batching adaptativo e controlo de admissão. O protocolo maximiza a fração de pacotes entregues dentro do prazo, descartando dados expirados ou com baixa probabilidade de cumprimento.
+
+\section{Revisão de Literatura}
+
+\textbf{Deadline-aware networking.} Shi et al. (APNet 2019) propõem transportes com deadlines explícitas para datacenters, demonstrando redução de tail latency. Hong et al. (SIGCOMM 2012) introduzem D3 para scheduling deadline-aware em switches.
+
+\textbf{Scheduling tempo-real.} EDF (Earliest Deadline First) é ótimo para single-core scheduling (Liu \& Layland, 1973), mas aplicado ao networking enfrenta desafios de starvation e overhead. Técnicas de aging e batching mitigam estes problemas.
+
+\textbf{QUIC e transporte moderno.} QUIC (RFC 9000) oferece latências baixas e multiplexação de streams, mas não possui mecanismos nativos para deadlines. Stream priorities existem mas não refletem urgência temporal absoluta.
+
+\textbf{AQM e redução de latência.} CoDel (RFC 8289) e FQ-CoDel reduzem bufferbloat ao nível da rede, mas não utilizam informação temporal da aplicação, levando a decisões subótimas de descarte.
+
+\textbf{Gap identificado:} Protocolos existentes carecem de integração entre deadlines da aplicação e decisões de transporte, forçando soluções ad-hoc por aplicação.
+
+\section{Problema Identificado}
+
+\subsection{Limitações das Abordagens Atuais}
+
+\begin{itemize}[noitemsep,topsep=2pt]
+    \item \textbf{TCP:} Retransmite e aguarda pacotes que já perderam utilidade temporal, causando head-of-line blocking.
+    \item \textbf{UDP:} Não oferece qualquer mecanismo de scheduling, priorização ou feedback de congestão.
+    \item \textbf{Soluções de aplicação:} Cada aplicação implementa o seu próprio controlo temporal, duplicando esforços e criando inconsistências.
+\end{itemize}
+
+\subsection{Implicações Práticas}
+
+\begin{itemize}[noitemsep,topsep=2pt]
+    \item Experiência degradada em VR/AR devido a frames atrasados (motion sickness).
+    \item Telemedicina: imagens médicas obsoletas comprometem diagnóstico.
+    \item Gaming: input lag superior a 50ms degrada jogabilidade.
+    \item Desperdício de largura de banda em dados que chegam tarde demais.
+\end{itemize}
+
+\section{Proposta de Protocolo (Mini-RFC)}
+
+\subsection{Objetivo e Arquitetura}
+
+Fornecer um protocolo leve sobre UDP que permita especificar deadlines e prioridades, implementando scheduling EDF com batching para LOW priority, admission control para prevenir DoS, e congestion control AIMD.
+
+\textbf{Entidades:} DTP Client, DTP Server, Scheduler (EDF), Metrics Collector.
+
+\subsection{Formato das Mensagens}
+
+\begin{verbatim}
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|Ver|Flg|MsgTyp|Pri|  StreamID   |        Sequence Number        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                     Timestamp (32 bits)                        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|          Payload Length         |         Checksum             |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                          Payload ...                           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+\end{verbatim}
+
+\textbf{Campos principais:}
+\begin{itemize}[noitemsep,topsep=2pt]
+    \item \textbf{Priority (2 bits):} CRITICAL (0), HIGH (1), MEDIUM (2), LOW (3).
+    \item \textbf{Timestamp:} Tempo de criação do pacote (monotonic clock, ms).
+    \item \textbf{Deadline implícito:} CRITICAL=500ms, HIGH=1500ms, MEDIUM=3000ms, LOW=6000ms.
+\end{itemize}
+
+\subsection{Tipos de Mensagens}
+
+\begin{itemize}[noitemsep,topsep=2pt]
+    \item \textbf{DATA:} Dados com deadline e prioridade.
+    \item \textbf{ACK:} Confirmação de receção (usado em congestion control).
+    \item \textbf{SYNC\_REQ/SYNC\_RESP:} Sincronização de relógios (3-way handshake).
+\end{itemize}
+
+\subsection{Scheduling e Políticas}
+
+\textbf{Scheduler EDF:} Prioridade FIFO heap com sort key = (priority, absolute\_deadline, sequence). CRITICAL, HIGH, MEDIUM são dequeued imediatamente. LOW usa batching (batch\_size=10, timeout=50ms) para reduzir overhead.
+
+\textbf{Política de expiração:}
+\begin{itemize}[noitemsep,topsep=2pt]
+    \item CRITICAL: nunca expira na fila (sempre enviado).
+    \item HIGH: tolerância 2× deadline (3000ms).
+    \item MEDIUM/LOW: tolerância 1× deadline.
+\end{itemize}
+
+\textbf{Admission Control:} Token bucket por prioridade (CRITICAL: 50pkt/s, burst=20) previne flooding.
+
+\textbf{Congestion Control:} AIMD com janela de 1s, threshold de 2\% loss rate, additive increase de 10pkt/s por janela, multiplicative decrease de 0.5.
+
+\subsection{Operações e Pseudocódigo}
+
+\begin{lstlisting}[basicstyle=\tiny\ttfamily,frame=single]
+# Enqueue (Client)
+if admission_controller.admit(priority):
+    packet = create_packet(data, priority, seq)
+    scheduler.enqueue(packet)
+    metrics.record_sent(packet)
+
+# Dequeue (Scheduler)
+while queue_size > 0:
+    packet = priority_queue.pop()  # Ordered by EDF
+    if is_expired(packet):
+        metrics.record_dropped(packet, "expired")
+        continue
+    if congestion_controller.wait_for_token():
+        send(packet)
+        congestion_controller.on_packet_sent()
+\end{lstlisting}
+
+\section{Implementação e Resultados}
+
+\subsection{Descrição da Implementação}
+
+\textbf{Linguagem:} Python 3.10+\\
+\textbf{Bibliotecas:} socket (UDP), threading, heapq (priority queue), dataclasses.\\
+\textbf{Módulos desenvolvidos (8 ficheiros):}
+\begin{itemize}[noitemsep,topsep=2pt]
+    \item \texttt{protocol.py}: Formato de pacotes, serialização, sistema de tempo (monotonic).
+    \item \texttt{scheduler.py}: DTPScheduler (EDF+batching), SimpleScheduler (FIFO baseline).
+    \item \texttt{metrics.py}: Coletor de estatísticas (latency, on-time rate, p95/p99).
+    \item \texttt{rate\_control.py}: AdmissionController, CongestionController (AIMD), TokenBucket.
+    \item \texttt{client.py}, \texttt{server.py}: Componentes de rede.
+    \item \texttt{logger.py}: Logging estruturado (JSONL) para reprodutibilidade.
+    \item \texttt{clock\_sync.py}: Sincronização de relógios distribuídos (3-way handshake).
+\end{itemize}
+
+\textbf{Suite de testes:} \texttt{run\_all\_tests.py} executa 3 testes essenciais que validam o funcionamento core.
+
+\textbf{Reprodução dos testes:}
+\begin{lstlisting}[basicstyle=\tiny\ttfamily,frame=single]
+# Instalar dependencias
+pip install -r requirements.txt
+
+# Executar suite de testes completa (~8s)
+python run_all_tests.py
+\end{lstlisting}
+
+\subsection{Cenários de Teste}
+
+\textbf{TESTE 1 — FIFO vs DTP:} 1000 pacotes misturados (50 CRITICAL, 150 HIGH, 300 MEDIUM, 500 LOW), delay de rede simulado (3ms), sem perdas.
+
+\textbf{TESTE 2 — Priority Ordering:} Validação de que CRITICAL é enviado primeiro e MEDIUMs seguem ordem de absolute deadline.
+
+\textbf{TESTE 3 — Timestamp Consistency:} Verificação de que \texttt{now\_ms()} é monotónico e preciso.
+
+\subsection{Resultados Experimentais}
+
+\textbf{Tabela 1: Comparação FIFO vs DTP (On-Time Delivery Rate)}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Priority} & \textbf{FIFO} & \textbf{DTP} & \textbf{Melhoria} \\
+\midrule
+CRITICAL & 18.0\% & 100.0\% & +82.0\% \\
+HIGH     & 38.0\% & 100.0\% & +62.0\% \\
+MEDIUM   & 82.0\% & 100.0\% & +18.0\% \\
+LOW      & 100.0\% & 100.0\% & 0.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Tabela 2: Latências p95 (milliseconds)}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+\textbf{Priority} & \textbf{FIFO p95} & \textbf{DTP p95} \\
+\midrule
+CRITICAL & 3690ms & 200ms \\
+HIGH     & 3567ms & 751ms \\
+MEDIUM   & 3563ms & 1862ms \\
+LOW      & 3570ms & 3717ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Análise dos Resultados}
+
+\textbf{CRITICAL packets:} DTP consegue 100\% on-time delivery vs 18\% em FIFO, com redução de latência p95 de 3690ms para 200ms (18.4× mais rápido).
+
+\textbf{HIGH packets:} Melhoria de 62\% na taxa on-time, com latência p95 reduzida de 3567ms para 751ms (4.7× mais rápido).
+
+\textbf{MEDIUM packets:} Melhoria de 18\%, mantendo latências controláveis.
+
+\textbf{LOW packets:} Sem degradação significativa (batching eficiente), latência similar entre abordagens.
+
+\textbf{Priority Ordering:} Validado que CRITICAL é sempre enviado primeiro, e dentro da mesma prioridade a ordem segue absolute deadline (EDF correto).
+
+\textbf{Timestamp:} Sistema de tempo monotónico validado com precisão de ±5ms em intervalos de 100ms.
+
+\subsection{Trade-offs Identificados}
+
+\begin{itemize}[noitemsep,topsep=2pt]
+    \item \textbf{Overhead de scheduling:} Operações de heap (O(log n)) vs FIFO (O(1)), mas negligível para filas <10k pacotes.
+    \item \textbf{Starvation de LOW:} Mitigado com batching e timeout de 50ms.
+    \item \textbf{Sem retransmissões:} Perda de pacote é definitiva, adequado para streaming mas não para transferências fiáveis.
+\end{itemize}
+
+\section{Conclusões e Trabalho Futuro}
+
+O DTP demonstra que a integração de deadlines no transporte melhora significativamente a performance de aplicações tempo-real, com melhorias de até 82\% na entrega on-time de pacotes críticos. A implementação valida a viabilidade do protocolo e confirma que EDF com batching adaptativo é eficaz para diferentes workloads.
+
+\subsection{Desenvolvimentos Futuros}
+
+\begin{itemize}[noitemsep,topsep=2pt]
+    \item \textbf{FEC adaptativo:} Integrar Forward Error Correction leve para reduzir impacto de perdas sem retransmissões.
+    \item \textbf{Multi-path:} Explorar MPTCP-like para redundância em caminhos com diferentes latências.
+    \item \textbf{Integração com QUIC:} Estender QUIC com frames deadline-aware.
+    \item \textbf{Network-level support:} Implementar hints para switches (P4) reconhecerem deadlines DTP.
+    \item \textbf{Machine Learning:} Predição de congestion para ajuste proactivo de rates.
+\end{itemize}
+
+\section*{Referências}
+\small
+\begin{itemize}[leftmargin=10pt,noitemsep,topsep=2pt]
+    \item Shi, Y., et al. (2019). \textit{Deadline-Aware Transport in Datacenters}. APNet.
+    \item Hong, C. Y., et al. (2012). \textit{Finishing Flows Quickly with Preemptive Scheduling}. SIGCOMM.
+    \item Liu, C. L., \& Layland, J. W. (1973). \textit{Scheduling Algorithms for Multiprogramming in a Hard-Real-Time Environment}. JACM, 20(1).
+    \item RFC 9000 — QUIC: A UDP-Based Multiplexed and Secure Transport.
+    \item RFC 8289 — Controlled Delay Active Queue Management.
+    \item RFC 6363 — Forward Error Correction Framework.
+\end{itemize}
+
+\end{document}

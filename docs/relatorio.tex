@@ -1,0 +1,196 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{times}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{fancyhdr}
+\usepackage{setspace}
+\usepackage{listings}
+
+\setlength{\parskip}{6pt}
+\setlength{\parindent}{0pt}
+
+\titleformat{\section}{\large\bfseries}{\thesection}{1em}{}
+
+\title{\textbf{DTP — Deadline-aware Transport Protocol}\\
+\large Arquiteturas Avançadas de Redes — UBI (2025/26)}
+\author{
+Leonardo Santos (M15811) \\
+Diogo Pedro (E11657)\\
+Guilherme Vicente (E11656)\\
+Tiago Ramos (E11663)
+}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+O DTP (Deadline-aware Transport Protocol) é um protocolo de transporte proposto para aplicações interativas e sensíveis ao tempo, onde a entrega antes de um prazo (deadline) é mais importante que a fiabilidade absoluta. Este relatório descreve a motivação, o problema identificado, uma revisão de literatura relevante, o mini-RFC que define o funcionamento do DTP, o seu modelo de operação, formato de mensagens e políticas de scheduling. A secção de implementação e resultados será preenchida posteriormente com o protótipo a desenvolver. 
+\end{abstract}
+
+\section{Introdução}
+
+Aplicações modernas como VR/AR, sistemas de telemedicina, controlo robótico e streaming interativo exigem requisitos temporais estritos. Protocolos tradicionais como TCP priorizam fiabilidade e congestion control, mas ignoram deadlines; pacotes que chegam tarde perdem utilidade.
+
+O DTP (Deadline-aware Transport Protocol) aborda este problema ao permitir que aplicações definam explicitamente deadlines para cada unidade de dados. O protocolo gere prioridades, descarta informação expirada e tenta maximizar a fração de pacotes entregues antes do deadline.
+
+\section{Revisão de Literatura}
+
+\textbf{Deadline-aware networking.} Trabalhos recentes como Shi et al. (APNet 2019) discutem transportes que incorporam deadlines explícitas, principalmente em datacenters. A ideia é aproximar o comportamento do transporte às necessidades reais de aplicações interativas.
+
+\textbf{QUIC e transporte moderno.} QUIC oferece latências baixas e streams multiplexados, mas não possui um mecanismo nativo para deadlines. Extensões propostas exploram prioridades, mas continuam centradas em fiabilidade.
+
+\textbf{AQM e redução de latência.} Técnicas como CoDel e FQ-CoDel lidam com filas e latência ao nível da rede, mas não utilizam informação temporal fornecida pela aplicação.
+
+\textbf{FEC.} RFC 6363 descreve mecanismos de FEC aplicados a fluxos multimédia para reduzir impacto de perdas sem retransmissões. No contexto de mensagens com deadlines, FEC leve pode ser útil.
+
+\textbf{Pontos-chave da literatura:}
+\begin{itemize}[noitemsep]
+    \item Os protocolos existentes não incorporam deadlines explícitas.
+    \item Aplicações implementam o seu próprio controlo temporal, criando inconsistência.
+    \item Prioridades existem, mas não refletem urgência temporal.
+\end{itemize}
+
+\section{Problema Identificado}
+
+O problema em aberto prende-se com a incapacidade dos protocolos de transporte tradicionais em distinguir dados que deixam de ser úteis após um prazo.
+
+\subsection*{Limitações das abordagens atuais}
+\begin{itemize}[noitemsep]
+    \item TCP retrasa ou retransmite pacotes que já perderam utilidade.
+    \item UDP não fornece qualquer mecanismo de scheduling ou priorização.
+    \item Soluções de aplicação (e.g., descarte manual de frames) duplicam esforços.
+\end{itemize}
+
+\subsection*{Implicações práticas}
+\begin{itemize}[noitemsep]
+    \item Experiência degradada em VR e videoconferência.
+    \item Atrasos acumulados devido a filas sem noção de deadlines.
+    \item Desperdício de largura de banda em retransmissões desnecessárias.
+\end{itemize}
+
+O DTP procura integrar deadlines no próprio transporte para corrigir estas limitações.
+
+\section{Proposta de Protocolo (Mini-RFC)}
+
+\subsection{Objetivo}
+Fornecer um protocolo leve, baseado em UDP, que permita ao emissor enviar pacotes com deadlines explícitas, prioridades e informação temporal suficiente para que o receptor e a rede possam tomar decisões orientadas à utilidade temporal dos dados.
+
+\subsection{Arquitetura Geral}
+
+\textbf{Camada:} Transporte (sobre UDP).  
+\textbf{Entidades:} Sender, Receiver e Proxy opcional.
+
+Fluxo: Aplicação $\rightarrow$ DTP Sender $\rightarrow$ UDP $\rightarrow$ DTP Receiver $\rightarrow$ Aplicação.
+
+O relógio pode ser local ou relativo, com deadlines especificadas em milissegundos após envio.
+
+\subsection{Formato das Mensagens}
+
+\begin{verbatim}
+0                   1                   2                   3
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+| Ver |Flags|MsgType|Pri| StreamID |         Seq Number         |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                       Deadline_ms (32 bits)                    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                     Timestamp_send (32 bits)                   |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    PayloadLen   | Reserved  |       Payload ...                |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+\end{verbatim}
+
+\subsection{Tipos de Mensagens}
+
+\begin{itemize}[noitemsep]
+    \item DATA — dados com deadline.
+    \item ACK/NACK — confirmação ou indicação de perda.
+    \item SYN/FIN — início e fecho de sessão.
+    \item CTRL — sinalização opcional de métricas.
+\end{itemize}
+
+\subsection{Operações e Estados}
+
+\textbf{Sender:}
+\begin{itemize}[noitemsep]
+    \item IDLE $\rightarrow$ SENDING
+    \item SENDING $\rightarrow$ BACKPRESSURE (fila cheia)
+    \item SENDING $\rightarrow$ CLOSED
+\end{itemize}
+
+\textbf{Receiver:} LISTEN → RECEIVING → CLOSED.
+
+\subsection{Scheduling e Congestion Control}
+
+\textbf{Scheduler principal:} EDF (Earliest Deadline First), com aging para evitar starvation.
+
+\textbf{Pacing:} baseado em estimativas de RTT e perda, ajustando taxa de envio.
+
+\textbf{Política de Descarte:} pacotes expirados ou com envio previsto fora do prazo são descartados imediatamente.
+
+\subsection{Pseudocódigo Simplificado}
+
+\begin{verbatim}
+while true:
+  now = time_ms()
+  pkt = pq.peek()    # Ordenado por deadline
+  if not pkt: sleep(short)
+  else:
+      if pkt.enqueue_time + pkt.deadline < now:
+          pq.pop()  # Expirou
+          continue
+      if estimated_tx_time > pkt.deadline:
+          pq.pop()  # Não vai cumprir deadline
+          continue
+      send(pkt)
+\end{verbatim}
+
+\section{Métricas e Metodologia de Avaliação}
+
+\begin{itemize}[noitemsep]
+    \item Percentagem de pacotes entregues dentro do deadline (\% on-time).
+    \item Latência média e p95/p99 por prioridade.
+    \item Goodput útil (bytes entregues a tempo por segundo).
+    \item Overhead de controlo (ACK/FEC).
+\end{itemize}
+
+\textbf{Cenários de teste:}
+\begin{itemize}[noitemsep]
+    \item Carga baixa vs carga elevada.
+    \item Fluxos mistos: tráfego crítico + tráfego bulk.
+    \item Perdas aleatórias vs bursts.
+    \item Estudo de parâmetros (tamanho da fila, intensidade de pacing).
+\end{itemize}
+
+\section{Implementação e Resultados (a preencher)}
+
+Esta secção será completada após o desenvolvimento do protótipo do DTP.  
+Deve incluir:
+
+\begin{itemize}[noitemsep]
+    \item Descrição da implementação (linguagem, bibliotecas).
+    \item Topologia de testes.
+    \item Cenários e métricas recolhidas.
+    \item Gráficos e comparação com baseline (UDP / QUIC-lite).
+\end{itemize}
+
+\section{Conclusões}
+
+O DTP oferece uma abordagem prática para transportar dados sensíveis ao tempo, permitindo que a própria aplicação defina deadlines e prioridades. Isto permite reduzir latência, eliminar o envio de dados inúteis e melhorar a experiência em aplicações tempo-real. O protocolo é extensível e pode futuramente integrar FEC adaptativo e coexistência com QUIC.
+
+\section{Referências}
+
+\small
+\begin{itemize}[leftmargin=10pt]
+    \item Shi, Y., et al. (2019). Deadline-Aware Transport. APNet.
+    \item RFC 6363 — Forward Error Correction Framework.
+    \item RFCs e drafts relacionados com QUIC e HTTP/3.
+    \item Papers sobre CoDel e FQ-CoDel.
+\end{itemize}
+
+\end{document}
